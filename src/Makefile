@@ -1,5 +1,6 @@
 CC=gcc
 CFLAGS=-g
+LDFLAGS=-lcrypto
 
 .PHONY: all
 all: nyufile
