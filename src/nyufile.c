@@ -13,7 +13,6 @@
 #include <openssl/sha.h>
 #include <stdbool.h>
 
-//#define SHA_DIGEST_LENGTH 20
 
 //define relevant data structures
 #pragma pack(push,1)
@@ -84,22 +83,14 @@ void printRootDirInfo(char* mmap_base, int* fat, struct BootEntry *boot){
 
     off_t offset = boot->BPB_BytsPerSec*(boot->BPB_RsvdSecCnt + (boot->BPB_NumFATs*boot->BPB_FATSz32) + ((boot->BPB_RootClus-2)*boot->BPB_SecPerClus));
     int max_ent_per_cluster = (int)((boot->BPB_BytsPerSec*boot->BPB_SecPerClus)/32);
-    //int entry = max_ent_per_cluster;
     char *curr_char = NULL;
     int curr_cluster = boot->BPB_RootClus;
     int entry_count = 0;
-    //off_t offset_fat = boot->BPB_BytsPerSec*(boot->BPB_RsvdSecCnt);
-    
-    // printf("debug: offset for root dir is %d\n", offset);
-    // printf("debug: offset for fat is %d\n", offset_fat);
-    // printf("debug: at fat 5 %d\n", fat[6]);
 
     while(1){
         root_dir = (struct DirEntry *)(mmap_base + offset);
         int idx = max_ent_per_cluster;
-        //printf("debug4 %.1s\n", root_dir[idx].DIR_Name);
         while(root_dir->DIR_Name[0] != 0 && idx){
-            //printf("debug5\n");
             if(root_dir->DIR_Name[0] == 0xE5){
                 idx--;
                 root_dir++;
@@ -107,13 +98,10 @@ void printRootDirInfo(char* mmap_base, int* fat, struct BootEntry *boot){
             } 
             entry_count++;
             unsigned char* name = root_dir->DIR_Name;
-            //printf("debug7\n");
             int dir_flag = ((root_dir->DIR_Attr & 16) != 0);
-            //printf("debug8\n");
             if(dir_flag){
                 for(int i = 0; i < 11; i++){
                     if(name[i] != ' '){
-                        //printf("debug9\n");
                         printf("%c", name[i]);
                     }
                     else{
@@ -159,15 +147,9 @@ void printRootDirInfo(char* mmap_base, int* fat, struct BootEntry *boot){
             curr_cluster = fat[curr_cluster];
             offset = offset + boot->BPB_BytsPerSec*(cluster_offset*boot->BPB_SecPerClus);
         }
-        //printf("debug6\n");
     }
     printf("Total number of entries = %d\n", entry_count);
-
     
-}
-
-void recoverContFileSha1(int fd, char *file, char *sha1){
-    printf("called recoverContFileSha1");
 }
 
 void recoverEntry(struct BootEntry *boot, struct DirEntry *entry, int* fat1, char *file_name, bool sha1_enabled){
@@ -181,32 +163,14 @@ void recoverEntry(struct BootEntry *boot, struct DirEntry *entry, int* fat1, cha
     else{
         cluster_count = (int)s;
     }
-    //if(root_dir->DIR_FileSize != 0){
     int start = (entry->DIR_FstClusHI << 8) | entry->DIR_FstClusLO;
     int end = start+cluster_count-1;
-    //printf("debug:%d %d %d %lf %lf %d %d\n", start, cluster_count, end, (513/1024), ceil((root_dir->DIR_FileSize)/(boot->BPB_BytsPerSec*boot->BPB_SecPerClus)), root_dir->DIR_FileSize, (boot->BPB_BytsPerSec*boot->BPB_SecPerClus));
     int j = start;
     while(j < end){
-            //printf("writing at fat %d\n", j);
             fat1[j] = j+1;
             j++;
     }
-    //printf("writing at fat %d\n", end);
     fat1[end] = 0x0ffffff8;
-    // for(int i = 2; i <= boot->BPB_NumFATs; i++){
-    //     fat1 = (int *)(fat1+(boot->BPB_BytsPerSec*boot->BPB_FATSz32));
-    //     int j = start;
-    //     while(j < end){
-    //         printf("writing at fat %d\n", j);
-    //         fat1[j] = j+1;
-    //         j++;
-    //     }
-    //     printf("writing at fat %d\n", end);
-    //     fat1[end] = 0x0ffffff8;
-    // }
-    //}
-
-    //write(fd, mmap_base, size);
     if(sha1_enabled){
          printf("%s: successfully recovered with SHA-1\n", file_name);
     }
@@ -216,7 +180,7 @@ void recoverEntry(struct BootEntry *boot, struct DirEntry *entry, int* fat1, cha
     exit(0);
 }
 
-void recoverContFile(char* mmap_base, int* fat1, struct BootEntry *boot, char* file_name, bool sha1_enabled, unsigned char* sha1){
+void recoverFile(char* mmap_base, int* fat1, struct BootEntry *boot, char* file_name, bool sha1_enabled, unsigned char* sha1){
     struct DirEntry *root_dir;
     struct DirEntry *first_match;
     unsigned char sha1_curr[SHA_DIGEST_LENGTH];
@@ -316,10 +280,6 @@ void recoverContFile(char* mmap_base, int* fat1, struct BootEntry *boot, char* f
     printf("%s: file not found\n", file_name);
 }
 
-void recoverNonContFileSha1(int fd, char *file, unsigned char *sha1){
-    printf("called recoverNonContFileSha1");
-}
-
 int main(int argc, char **argv){
     //command parsing
     char *disk_name = argv[optind];
@@ -350,34 +310,27 @@ int main(int argc, char **argv){
     int opt = getopt(argc, argv, "ilr:R:s:");
     switch (opt){
         case 'i':
-            //disk_name = getDiskName(optind, argv, error_msg);
             checkEndOfOptions(getopt(argc, argv, "ilr:R:s:"), error_msg);
             printFSInfo(boot);
             break;
         case 'l':
-            //disk_name = getDiskName(optind, argv, error_msg);
             checkEndOfOptions(getopt(argc, argv, "ilr:R:s:"), error_msg);
             printRootDirInfo(mmap_base, fat1, boot);
             break;
         case 'r':
             file_name = optarg;
             opt = getopt(argc, argv, "ilr:R:s:");
-            //disk_name = getDiskName(optind, argv, error_msg);
             switch (opt){
                 case 's':
                     char *ssha1 = optarg;
                     checkEndOfOptions(getopt(argc, argv, "ilr:R:s:"), error_msg);
-                    //printf("debug 1 %s\n", ssha1);
-                    //sscanf(ssha1, "%x", sha1);
                     for (int i = 0; i < SHA_DIGEST_LENGTH; i++) {
                         sscanf(ssha1 + (i * 2), "%2hhx", &sha1[i]);
                     }
-                    //printf("debug 3 %s\n", sha1);
-                    //recoverContFileSha1(fd, file_name, sha1);
-                    recoverContFile(mmap_base, fat1, boot, file_name, 1, sha1);
+                    recoverFile(mmap_base, fat1, boot, file_name, 1, sha1);
                     break;
                 case -1:
-                    recoverContFile(mmap_base, fat1, boot, file_name, 0, sha1);
+                    recoverFile(mmap_base, fat1, boot, file_name, 0, sha1);
                     break;
                 default:
                     printf("%s", error_msg);
@@ -387,15 +340,14 @@ int main(int argc, char **argv){
         case 'R':
             file_name = optarg;
             opt = getopt(argc, argv, "ilr:R:s:");
+            char *ssha1 = optarg;
             checkEndOfOptions(getopt(argc, argv, "ilr:R:s:"), error_msg);
-            //disk_name = getDiskName(optind, argv, error_msg);
             switch (opt){
                 case 's':
-                    char *ssha1 = optarg;
                     for (int i = 0; i < SHA_DIGEST_LENGTH; i++) {
                         sscanf(ssha1 + (i * 2), "%2hhx", &sha1[i]);
                     }
-                    recoverNonContFileSha1(fd, file_name, sha1);
+                    recoverFile(mmap_base, fat1, boot, file_name, 1, sha1);
                     break;
                 default:
                     printf("%s", error_msg);
