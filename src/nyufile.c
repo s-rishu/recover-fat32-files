@@ -10,6 +10,9 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <math.h>
+#include <openssl/sha.h>
+
+#define SHA_DIGEST_LENGTH 20
 
 //define relevant data structures
 #pragma pack(push,1)
@@ -69,7 +72,9 @@ void checkEndOfOptions(int opt, char *err){
 }
 
 void printFSInfo(struct BootEntry *boot){
+//    printf("Number of FATs = %d\nNumber of bytes per sector = %d\nNumber of sectors per cluster = %d\nNumber of reserved sectors = %d\nNumber of root start cluster = %d\nNumber of sectors in a fat = %d\n", boot->BPB_NumFATs, boot->BPB_BytsPerSec, boot->BPB_SecPerClus, boot->BPB_RsvdSecCnt, boot->BPB_RootClus, boot->BPB_FATSz32);
     printf("Number of FATs = %d\nNumber of bytes per sector = %d\nNumber of sectors per cluster = %d\nNumber of reserved sectors = %d\n", boot->BPB_NumFATs, boot->BPB_BytsPerSec, boot->BPB_SecPerClus, boot->BPB_RsvdSecCnt);
+
 }
 
 void printRootDirInfo(char* mmap_base, int* fat, struct BootEntry *boot){   
@@ -78,10 +83,16 @@ void printRootDirInfo(char* mmap_base, int* fat, struct BootEntry *boot){
 
     off_t offset = boot->BPB_BytsPerSec*(boot->BPB_RsvdSecCnt + (boot->BPB_NumFATs*boot->BPB_FATSz32) + ((boot->BPB_RootClus-2)*boot->BPB_SecPerClus));
     int max_ent_per_cluster = (int)((boot->BPB_BytsPerSec*boot->BPB_SecPerClus)/32);
-    int entry = max_ent_per_cluster;
+    //int entry = max_ent_per_cluster;
     char *curr_char = NULL;
     int curr_cluster = boot->BPB_RootClus;
     int entry_count = 0;
+    //off_t offset_fat = boot->BPB_BytsPerSec*(boot->BPB_RsvdSecCnt);
+    
+    // printf("debug: offset for root dir is %d\n", offset);
+    // printf("debug: offset for fat is %d\n", offset_fat);
+    // printf("debug: at fat 5 %d\n", fat[6]);
+
     while(1){
         root_dir = (struct DirEntry *)(mmap_base + offset);
         int idx = max_ent_per_cluster;
@@ -158,8 +169,49 @@ void recoverContFileSha1(int fd, char *file, char *sha1){
     printf("called recoverContFileSha1");
 }
 
-void recoverContFile(char* mmap_base, int* fat1, struct BootEntry *boot, char* file_name){
+void recoverEntry(struct BootEntry *boot, struct DirEntry *entry, int* fat1){
+    //recover
+    entry->DIR_Name[0] = file_name[0];
+    double s = (double)(entry->DIR_FileSize)/(double)(boot->BPB_BytsPerSec*boot->BPB_SecPerClus);
+    int cluster_count;
+    if((int)s < s){
+        cluster_count = (int)s+1;
+    }
+    else{
+        cluster_count = (int)s;
+    }
+    //if(root_dir->DIR_FileSize != 0){
+    int start = (entry->DIR_FstClusHI << 8) | entry->DIR_FstClusLO;
+    int end = start+cluster_count-1;
+    //printf("debug:%d %d %d %lf %lf %d %d\n", start, cluster_count, end, (513/1024), ceil((root_dir->DIR_FileSize)/(boot->BPB_BytsPerSec*boot->BPB_SecPerClus)), root_dir->DIR_FileSize, (boot->BPB_BytsPerSec*boot->BPB_SecPerClus));
+    int j = start;
+    while(j < end){
+            //printf("writing at fat %d\n", j);
+            fat1[j] = j+1;
+            j++;
+    }
+    //printf("writing at fat %d\n", end);
+    fat1[end] = 0x0ffffff8;
+    // for(int i = 2; i <= boot->BPB_NumFATs; i++){
+    //     fat1 = (int *)(fat1+(boot->BPB_BytsPerSec*boot->BPB_FATSz32));
+    //     int j = start;
+    //     while(j < end){
+    //         printf("writing at fat %d\n", j);
+    //         fat1[j] = j+1;
+    //         j++;
+    //     }
+    //     printf("writing at fat %d\n", end);
+    //     fat1[end] = 0x0ffffff8;
+    // }
+    //}
+
+    //write(fd, mmap_base, size);
+    printf("%s: successfully recovered\n", file_name);
+    exit(0);
+}
+void recoverContFile(char* mmap_base, int* fat1, struct BootEntry *boot, char* file_name, bool sha1_enabled, char* sha1){
     struct DirEntry *root_dir;
+    struct DirEntry *first_match;
     //calculate offset for root directory cluster
 
     off_t offset = boot->BPB_BytsPerSec*(boot->BPB_RsvdSecCnt + (boot->BPB_NumFATs*boot->BPB_FATSz32) + ((boot->BPB_RootClus-2)*boot->BPB_SecPerClus));
@@ -167,7 +219,7 @@ void recoverContFile(char* mmap_base, int* fat1, struct BootEntry *boot, char* f
     int entry = max_ent_per_cluster;
     char *curr_char = NULL;
     int curr_cluster = boot->BPB_RootClus;
-    //int entry_count = 0;
+    int match_count = 0;
     while(1){
         root_dir = (struct DirEntry *)(mmap_base + offset);
         int idx = max_ent_per_cluster;
@@ -199,44 +251,19 @@ void recoverContFile(char* mmap_base, int* fat1, struct BootEntry *boot, char* f
                         while(i < 10){
                             i++;
                             if(name[i] != ' '){
-                                printf("%s: file not found\n", file_name);
+                                printf("%s: file not found\n", file_name); //might be an issue
                                 exit(0);
                             }
                         }
-                        //recover
-                        root_dir->DIR_Name[0] = file_name[0];
-                        double s = (double)(root_dir->DIR_FileSize)/(double)(boot->BPB_BytsPerSec*boot->BPB_SecPerClus);
-                        int cluster_count;
-                        if((int)s < s){
-                            cluster_count = (int)s+1;
+                        if(match_count == 0){
+                            first_match = root_dir;
+                            match_count++;
                         }
                         else{
-                            cluster_count = (int)s;
+                            printf("%s: multiple candidates found\n", file_name);
+                            exit(0);
                         }
-                        //if(root_dir->DIR_FileSize != 0){
-                        int start = (root_dir->DIR_FstClusHI << 8) | root_dir->DIR_FstClusLO;
-                        int end = start+cluster_count-1;
-                        //printf("debug:%d %d %d %lf %lf %d %d\n", start, cluster_count, end, (513/1024), ceil((root_dir->DIR_FileSize)/(boot->BPB_BytsPerSec*boot->BPB_SecPerClus)), root_dir->DIR_FileSize, (boot->BPB_BytsPerSec*boot->BPB_SecPerClus));
-                        int j = start;
-                        while(j < end){
-                             fat1[j] = j+1;
-                             j++;
-                        }
-                        fat1[end] = 0x0ffffff8;
-                        for(int i = 2; i <= boot->BPB_NumFATs; i++){
-                            fat1 = (int *)(fat1+(boot->BPB_BytsPerSec*boot->BPB_FATSz32));
-                            int j = start;
-                            while(j < end){
-                                fat1[j] = j+1;
-                                j++;
-                            }
-                            fat1[end] = 0x0ffffff8;
-                        }
-                        //}
-
-                        //write(fd, mmap_base, size);
-                        printf("%s: successfully recovered\n", file_name);
-                        exit(0);
+                        
                     }
                     j++;
                     i++;
@@ -256,6 +283,9 @@ void recoverContFile(char* mmap_base, int* fat1, struct BootEntry *boot, char* f
             offset = offset + boot->BPB_BytsPerSec*(cluster_offset*boot->BPB_SecPerClus);
         }
         //printf("debug6\n");
+    }
+    if(match_count==1){
+        recoverEntry(boot, first_match, fat1);
     }
     printf("%s: file not found\n", file_name);
 }
@@ -311,10 +341,11 @@ int main(int argc, char **argv){
                 case 's':
                     checkEndOfOptions(getopt(argc, argv, "ilr:R:s:"), error_msg);
                     sha1 = optarg;
-                    recoverContFileSha1(fd, file_name, sha1);
+                    //recoverContFileSha1(fd, file_name, sha1);
+                    recoverContFile(mmap_base, fat1, boot, file_name, 1, sha1);
                     break;
                 case -1:
-                    recoverContFile(mmap_base, fat1, boot, file_name);
+                    recoverContFile(mmap_base, fat1, boot, file_name, 0, "");
                     break;
                 default:
                     printf("%s", error_msg);
